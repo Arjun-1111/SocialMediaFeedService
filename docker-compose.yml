@@ -1,0 +1,52 @@
+services:
+#  db
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres_db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: feeduser
+      POSTGRES_PASSWORD: feedpass
+      POSTGRES_DB: feedservice
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - feed_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U feeduser -d feedservice"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+#      redis
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
+    restart: unless-stopped
+    command: > 
+      redis-server 
+      --requirepass redispass
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+        - feed_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redispass", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+#
+networks:
+    feed_network:
+        driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

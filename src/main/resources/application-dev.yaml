@@ -1,0 +1,49 @@
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  # Local Database Overrides
+  datasource:
+    url: jdbc:postgresql://localhost:5432/feedservice
+    username: feeduser
+    password: feedpass
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+
+  # Local Redis Overrides
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: redispass
+
+  # Development-Safe Hibernate Settings
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        highlight_sql: true
+
+# Open Actuator for Easy Local Debugging
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
+
+# Enhanced Development Logging
+logging:
+  level:
+    root: INFO
+    com.feedservice: DEBUG
+    org.springframework.web: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE

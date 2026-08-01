@@ -1,0 +1,70 @@
+spring:
+  application:
+    name: social-media-feed-service
+
+  # PostgreSQL Configuration
+  datasource:
+    url: jdbc:postgresql://localhost:5432/feedservice
+    username: feeduser
+    password: feedpass
+    driver-class-name: org.postgresql.Driver
+
+    # HikariCP Connection Pool
+    hikari:
+      pool-name: FeedService-DB-Pool
+      maximum-pool-size: 10             # Max simultaneous DB connections
+      minimum-idle: 5                   # Always keep 5 connections ready
+      idle-timeout: 300000              # Close idle connections after 5 min
+      max-lifetime: 1800000             # Retire connections after 30 min
+      connection-timeout: 30000         # Wait max 30s for a connection
+      leak-detection-threshold: 2000    # Warn if connection held > 2s
+
+  #Redis Configuration
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: redispass
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 10                # Max active connections
+          max-idle: 10                  # Max idle connections
+          min-idle: 5                   # Min idle connections
+          max-wait: 2000ms              # Wait max 2s for connection
+
+  # JPA / Hibernate Configuration
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    open-in-view: false                 # Release DB connection after service layer
+    hibernate:
+      ddl-auto: update                  # Auto-create/update tables in dev
+    show-sql: true                      # Log SQL (dev only, disable in prod)
+    properties:
+      hibernate:
+        format_sql: true                # Pretty print SQL
+        use_sql_comments: true          # Add comments showing what triggered query
+        jdbc:
+          batch_size: 25                # Batch up to 25 inserts/updates together
+        order_inserts: true             # Group inserts for better batching
+        order_updates: true             # Group updates for better batching
+
+#Actuator Configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics    # Only expose safe endpoints
+  endpoint:
+    health:
+      show-details: always
+
+# Logging Configuration
+logging:
+  level:
+    com.feedservice: DEBUG              # Our code - verbose logging in dev
+    org.hibernate.SQL: DEBUG           # Show SQL statements
+    org.hibernate.type: TRACE          # Show SQL parameter values
+    com.zaxxer.hikari: INFO            # HikariCP connection pool logs
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
