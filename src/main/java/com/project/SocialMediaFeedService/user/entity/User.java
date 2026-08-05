@@ -31,9 +31,18 @@ public class User extends BaseEntity {
     @Column(name= "avatar_url")
     String avatarUrl;
 
+    //We are using @Builder on the User entity.
+    //Lombok's @Builder does NOT respect field-level defaults.
+    //Lombok provides @Builder.Default exactly for this situation.
+    @Builder.Default
     @Column(name = "follower_count", nullable = false, columnDefinition = "bigint default 0")
     Long followerCount = 0L;
 
+
+    //We are using @Builder on the User entity.
+    //Lombok's @Builder does NOT respect field-level defaults.
+    //Lombok provides @Builder.Default exactly for this situation.
+    @Builder.Default
     @Column(name = "following_count", nullable = false, columnDefinition = "bigint default 0")
     Long followingCount = 0L;
 
