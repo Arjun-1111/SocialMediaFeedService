@@ -44,7 +44,7 @@ public class FollowServiceImpl implements FollowService {
         userRepository.incrementFollowerCount(followingId);
         userRepository.incrementFollowingCount(followerId);
 
-        Follow savedFollow = followRepository.save(follow);
+        Follow savedFollow = followRepository.saveAndFlush(follow);
 
         //fetch updated following Count
         User userBeingFollowed  = userRepository.findById(followingId)
