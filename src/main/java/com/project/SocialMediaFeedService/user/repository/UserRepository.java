@@ -16,20 +16,22 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
 //    atomic update methods for follow
 //    The database performs the read and increment as one atomic operation — no race condition possible.
+//    Java entity class is named User with a capital U.
+//    JPQL is case sensitive for entity names.
     @Modifying
-    @Query("UPDATE user u set u.followerCount = u.followerCount + 1 where u.id = :userId")
+    @Query("UPDATE User u SET u.followerCount = u.followerCount + 1 WHERE u.id = :userId")
     void incrementFollowerCount(@Param("userId") Long userId);
 
     @Modifying
-    @Query("UPDATE user u set u.followerCount = u.followerCount - 1 where u.id = :userId and u.followerCount > 0")
+    @Query("UPDATE User u SET u.followerCount = u.followerCount - 1 WHERE u.id = :userId AND u.followerCount > 0")
     void decrementFollowerCount(@Param("userId") Long userId);
 
     @Modifying
-    @Query("UPDATE user u set u.followingCount = u.followingCount + 1 where u.id = :userId")
+    @Query("UPDATE User u SET u.followingCount = u.followingCount + 1 WHERE u.id = :userId")
     void incrementFollowingCount(@Param("userId") Long userId);
 
     @Modifying
-    @Query("UPDATE user u set u.followingCount = u.followingCount -1 where u.id = :userId and u.followingCount > 0")
+    @Query("UPDATE User u SET u.followingCount = u.followingCount -1 WHERE u.id = :userId AND u.followingCount > 0")
     void decrementFollowingCount(@Param("userId")  Long userId);
 
 
