@@ -11,7 +11,7 @@ import lombok.*;
 @AllArgsConstructor
 @NoArgsConstructor
 @Builder
-public class Post extends BaseEntity {
+public class  Post extends BaseEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     Long id;
