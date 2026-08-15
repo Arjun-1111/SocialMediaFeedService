@@ -11,12 +11,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+
+
 
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -26,11 +27,16 @@ public class FeedServiceImpl implements FeedService {
     private final FeedRedisRepository feedRedisRepository;
     private final PostRepository postRepository;
     private final PostMapper postMapper;
+    private final ObjectMapper objectMapper;
+
 
     @Override
     @Transactional(readOnly = true)
     public FeedResponse getFeed(Long userId, String cursor, int limit) {
         boolean hasMoreFeed = false;
+        ArrayList<PostResponse> cacheHitPosts = new ArrayList<>();
+        ArrayList<Long> cacheMissPostId = new ArrayList<>();
+        List<PostResponse> freshPosts = new ArrayList<>();
 
         //If cursor is null or empty → use Double.MAX_VALUE
         //Else → parse cursor to double
@@ -65,13 +71,29 @@ public class FeedServiceImpl implements FeedService {
             postIds.removeLast();  // only remove the extra one when there are more
         }
 
-        //Batch fetch posts from PostgreSQL
-        List<Post> postsById = postRepository.findAllById(postIds);
+        //Separate postIds into cached and uncached
+        //        → For each postId:
+        //           → Try getCachedPost(postId)
+        //           → If present → deserialize JSON → add to results
+        //           → If empty → add to missedIds list
+        getCachedPostsFromRedisCache(postIds, cacheHitPosts, cacheMissPostId);
+
+
+        //Batch fetch posts from PostgresSQL which are missed from redis cache
+        List<Post> postsFromDb = postRepository.findAllById(cacheMissPostId);
+
+        //cache newly fetched posts
+        cachePostsFetchedFromDb(postsFromDb, freshPosts);
+
+        //Combine cached posts + newly fetched posts
+        List<PostResponse> allPosts = new ArrayList<>(cacheHitPosts);
+        allPosts.addAll(freshPosts);
+
 
         //Convert to PostResponse list
         // Sort by createdAt descending
-        List<PostResponse> postFeed = postsById.stream()
-                .map(postMapper::toResponse).sorted(Comparator.comparing(PostResponse::getCreatedAt).reversed()).collect(Collectors.toList());
+        List<PostResponse> postFeed = allPosts.stream()
+                .sorted(Comparator.comparing(PostResponse::getCreatedAt).reversed()).collect(Collectors.toList());
         log.info("----------PostResponse : {}", postFeed);
 
 
@@ -82,7 +104,43 @@ public class FeedServiceImpl implements FeedService {
                 : null;
 
         //build and return
-        log.info("PostFeed: {}, nextCursor: {}, hasMoreFeed: {}", postFeed,nextCursor,hasMoreFeed);
+        log.info("---------------Returning PostFeed: {}, nextCursor: {}, hasMoreFeed: {}", postFeed,nextCursor,hasMoreFeed);
         return new FeedResponse(postFeed,nextCursor,hasMoreFeed);
     }
+
+    private void getCachedPostsFromRedisCache(List<Long> postIds, ArrayList<PostResponse> cacheHitPosts, ArrayList<Long> cacheMissPostId){
+        for(Long postId : postIds){
+            Optional<String> cachedPost = feedRedisRepository.getCachedPost(postId);
+            if(cachedPost.isPresent()){
+                log.info("Cache hit for postId : {}", postId);
+                try{
+                    String json = cachedPost.get();
+                    PostResponse  post = objectMapper.readValue(json, PostResponse.class);
+                    cacheHitPosts.add(post);
+                } catch (JacksonException e) {
+                    log.warn("Exception hit while serialization during cache read for postId: {}", postId);
+                    // If JSON parsing fails, treat it as a cache miss to be safe
+                    cacheMissPostId.add(postId);
+                }
+            }else{
+                cacheMissPostId.add(postId);
+            }
+        }
+    }
+
+    private void cachePostsFetchedFromDb(List<Post> posts, List<PostResponse> freshPosts){
+        for(Post post: posts){
+            PostResponse postToBeCached = postMapper.toResponse(post);
+            try{
+                log.info("Caching the post fetched from DB. post: {}", post);
+                String jsonToBeCached = objectMapper.writeValueAsString(postToBeCached);
+                feedRedisRepository.cachePost(post.getId(),jsonToBeCached);
+            } catch (JacksonException e) {
+                log.warn("Exception hit while serialization during cache write for post: {}", post);
+                log.warn("Error in Caching the Post");
+            }
+            freshPosts.add(postToBeCached);
+        }
+    }
+
 }
