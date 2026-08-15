@@ -1,6 +1,7 @@
 package com.project.SocialMediaFeedService.post.service.impl;
 
 import com.project.SocialMediaFeedService.common.exception.ResourceNotFoundException;
+import com.project.SocialMediaFeedService.feed.service.FanoutService;
 import com.project.SocialMediaFeedService.post.dto.request.CreatePostRequest;
 import com.project.SocialMediaFeedService.post.dto.response.PostResponse;
 import com.project.SocialMediaFeedService.post.entity.Post;
@@ -13,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.ZoneOffset;
 import java.util.List;
 
 @Service
@@ -21,6 +23,7 @@ public class PostServiceImpl implements PostService {
     private final PostRepository postRepository;
     private final UserRepository userRepository;
     private final PostMapper postMapper;
+    private final FanoutService fanoutService;
 
     @Override
     @Transactional
@@ -28,6 +31,14 @@ public class PostServiceImpl implements PostService {
         User fetchedUser = userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("user not found"));
         Post post = postMapper.toEntity(request, fetchedUser);
         Post savedPost = postRepository.save(post);
+
+        double score = (double) savedPost.getCreatedAt()
+                .toInstant(ZoneOffset.UTC)
+                .toEpochMilli();
+
+        //call to fanout service
+        fanoutService.fanoutToFollowers(savedPost.getId(), fetchedUser.getId(), score);
+
         return postMapper.toResponse(savedPost);
     }
 
