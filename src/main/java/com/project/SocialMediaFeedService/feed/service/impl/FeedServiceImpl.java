@@ -40,7 +40,9 @@ public class FeedServiceImpl implements FeedService {
 
         //If cursor is null or empty → use Double.MAX_VALUE
         //Else → parse cursor to double
-        double formattedCursor = cursor == null || cursor.isBlank() ? Double.MAX_VALUE : Double.parseDouble(cursor);
+        //Use cursor - 1 to exclude the cursor item itself
+
+        double formattedCursor = cursor == null || cursor.isBlank() ? Double.MAX_VALUE : Double.parseDouble(cursor) -1;
 
         //Get postIds from Redis
         //Request limit + 1 postIds from Redis feed
