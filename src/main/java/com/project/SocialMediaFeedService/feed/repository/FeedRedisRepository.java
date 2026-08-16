@@ -36,7 +36,9 @@ public class FeedRedisRepository {
     //)
     public Set<String> getFeedPostIds(Long userId, double maxScore, int limit){
         String key = feedKey(userId);
-        return redisTemplate.opsForZSet().reverseRangeByScore(key, 0, maxScore, 0, limit);
+        double exclusiveMax = maxScore == Double.MAX_VALUE ? maxScore : maxScore - 1;
+        return redisTemplate.opsForZSet()
+                .reverseRangeByScore(key, 0, exclusiveMax, 0, limit);
     }
 
     //Remove post from feed

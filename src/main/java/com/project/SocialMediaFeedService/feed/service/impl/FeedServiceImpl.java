@@ -3,10 +3,13 @@ package com.project.SocialMediaFeedService.feed.service.impl;
 import com.project.SocialMediaFeedService.feed.dto.response.FeedResponse;
 import com.project.SocialMediaFeedService.feed.repository.FeedRedisRepository;
 import com.project.SocialMediaFeedService.feed.service.FeedService;
+import com.project.SocialMediaFeedService.follow.repository.FollowRepository;
 import com.project.SocialMediaFeedService.post.dto.response.PostResponse;
 import com.project.SocialMediaFeedService.post.entity.Post;
 import com.project.SocialMediaFeedService.post.mapper.PostMapper;
 import com.project.SocialMediaFeedService.post.repository.PostRepository;
+import com.project.SocialMediaFeedService.user.entity.User;
+import com.project.SocialMediaFeedService.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -15,10 +18,11 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
 
-
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -28,86 +32,175 @@ public class FeedServiceImpl implements FeedService {
     private final PostRepository postRepository;
     private final PostMapper postMapper;
     private final ObjectMapper objectMapper;
+    private final FollowRepository followRepository;
+    private final UserRepository userRepository;
 
+    private static final long CELEBRITY_THRESHOLD = 10_000L;
+    private static final int FEED_REBUILD_LIMIT = 50;
+    private static final String CELEBRITY = "celebrity";
+    private static final String REGULAR = "regular";
 
     @Override
     @Transactional(readOnly = true)
     public FeedResponse getFeed(Long userId, String cursor, int limit) {
-        boolean hasMoreFeed = false;
-        ArrayList<PostResponse> cacheHitPosts = new ArrayList<>();
-        ArrayList<Long> cacheMissPostId = new ArrayList<>();
-        List<PostResponse> freshPosts = new ArrayList<>();
+        // Step 1: Parse cursor
+        double score = parseCursorToScore(cursor);
+        LocalDateTime cursorTime = parseCursorToDateTime(cursor);
 
+        // Step 2: Get following IDs
+        List<Long> followingIds = followRepository.findFollowingIdsByUserId(userId);
+        if (followingIds.isEmpty()) {
+            return emptyFeed();
+        }
+
+        // Step 3: Split into regular and celebrity
+        Map<String, List<Long>> split = splitFollowingByType(followingIds);
+        List<Long> regularIds = split.get(REGULAR);
+        List<Long> celebrityIds = split.get(CELEBRITY);
+
+        // Step 4: Get regular posts
+        List<PostResponse> regularPosts = getRegularPosts(userId, regularIds, score, limit);
+
+        // Step 5: Get celebrity posts
+        List<PostResponse> celebrityPosts = getCelebrityPosts(celebrityIds, cursorTime, limit);
+
+        // Step 6: Merge
+        List<PostResponse> merged = new ArrayList<>(regularPosts);
+        merged.addAll(celebrityPosts);
+        merged.sort(Comparator.comparing(PostResponse::getCreatedAt).reversed());
+
+
+        // Step 7: Determine hasMore and trim
+        boolean hasMore = merged.size() > limit;
+        if(hasMore){
+            merged = new ArrayList<>(merged.subList(0, limit));  // safer — makes it mutable
+        }
+
+        // Step 8: Calculate nextCursor
+        String nextCursor = hasMore && !merged.isEmpty() ? String.valueOf(merged.getLast()
+                .getCreatedAt().toInstant(ZoneOffset.UTC).toEpochMilli())
+                : null;
+
+        return FeedResponse.builder()
+                .posts(merged)
+                .nextCursor(nextCursor)
+                .hasMore(hasMore)
+                .build();
+    }
+
+    private double parseCursorToScore(String cursor){
         //If cursor is null or empty → use Double.MAX_VALUE
         //Else → parse cursor to double
         //Use cursor - 1 to exclude the cursor item itself
+        return cursor == null || cursor.isBlank() ? Double.MAX_VALUE : Double.parseDouble(cursor);
+    }
 
-        double formattedCursor = cursor == null || cursor.isBlank() ? Double.MAX_VALUE : Double.parseDouble(cursor) -1;
+    private LocalDateTime parseCursorToDateTime(String cursor){
+        // Returns LocalDateTime.now(ZoneOffset.UTC) if cursor is null
+        // Returns Instant.ofEpochMilli(Long.parseLong(cursor))
+        //              .atZone(ZoneId.of("UTC"))
+        //              .toLocalDateTime() otherwise
+        if(cursor == null){
+            return LocalDateTime.now(ZoneOffset.UTC);
+        }
+        return Instant.ofEpochMilli(Long.parseLong(cursor)).atZone(ZoneId.of("UTC")).toLocalDateTime();
+    }
 
-        //Get postIds from Redis
-        //Request limit + 1 postIds from Redis feed
-        //If we get limit + 1 → hasMore = true, remove last one
-        //If less → hasMore = false
-        Set<String> feedPostIds = feedRedisRepository.getFeedPostIds(userId, formattedCursor, limit + 1);
+    private Map<String, List<Long>> splitFollowingByType(List<Long> followingIds){
+        Map<String, List<Long>> regularAndCelebrityMap = new HashMap<>();
+        //If Alice follows nobody with celebrity status it will return null — key not in map so initialized it before.
+        regularAndCelebrityMap.putIfAbsent(REGULAR, new ArrayList<>());
+        regularAndCelebrityMap.putIfAbsent(CELEBRITY, new ArrayList<>());
+        // Fetch all followed users in one query: userRepository.findAllById(followingIds)
+        // For each user:
+        //   followerCount >= CELEBRITY_THRESHOLD → add to celebrityIds
+        //   else → add to regularIds
+        // Return map with keys "regular" and "celebrity"
+        List<User> userIds = userRepository.findAllById(followingIds);
 
-        //If no postIds → return empty feed
-        if(!feedPostIds.isEmpty()){
-            log.info("feedPostIds returned from Redis are {}", feedPostIds);
-            if(feedPostIds.size() > limit){
-                hasMoreFeed = true;
-                log.info("we have more feed to load");
+        for(User user: userIds){
+            if(user.getFollowerCount() >= CELEBRITY_THRESHOLD){
+                regularAndCelebrityMap.computeIfAbsent(CELEBRITY,k -> new ArrayList<>()).add(user.getId());
+            }else{
+                regularAndCelebrityMap.computeIfAbsent(REGULAR, k-> new ArrayList<>()).add(user.getId());
             }
+        }
+        return regularAndCelebrityMap;
+    }
+
+    private List<PostResponse> getRegularPosts(
+            Long userId, List<Long> regularIds, double score, int limit){
+        ArrayList<PostResponse> cacheHitPosts = new ArrayList<>();
+        ArrayList<Long> cacheMissPostId = new ArrayList<>();
+        List<PostResponse> allPosts = new ArrayList<>();
+        // If regularIds empty → return empty list
+        if(regularIds == null || regularIds.isEmpty()){
+            return List.of();
+        }
+        // Check feedExists(userId)
+        if(feedRedisRepository.feedExists(userId)){
+            // If exists:
+            //   getFeedPostIds(userId, score, limit+1) → Set<String>
+            Set<String> feedPostIds = feedRedisRepository.getFeedPostIds(userId, score, limit + 1);
+            //   Convert to List<Long>
+            List<Long> postIds = feedPostIds.stream().map(Long::parseLong).toList();
+            //   Batch fetch with cache-aside (existing logic)
+            //Separate postIds into cached and uncached
+            //        → For each postId:
+            //           → Try getCachedPost(postId)
+            //           → If present → deserialize JSON → add to results
+            //           → If empty → add to missedIds list
+            getCachedPostsFromRedisCache(postIds, cacheHitPosts, cacheMissPostId);
+            //Batch fetch posts from PostgresSQL which are missed from redis cache
+            List<Post> postsFromDb = postRepository.findAllById(cacheMissPostId);
+            //cache newly fetched posts
+            cachePostsFetchedFromDb(postsFromDb, allPosts);
+            //Combine cached posts + newly fetched posts
+            allPosts.addAll(cacheHitPosts);
         }else{
-            log.info("-----------Returning Empty Feed---------");
-                return FeedResponse.builder()
-                        .posts(List.of())
-                        .nextCursor(null)
-                        .hasMore(false)
-                        .build();
+            // If not exists (Redis empty):
+            //   findRecentPostsByUserIds(regularIds, FEED_REBUILD_LIMIT)
+            List<Post> recentPostsByUserIds = postRepository.findRecentPostsByUserIds(regularIds, FEED_REBUILD_LIMIT);;
+            //   Write postIds back to Redis:
+            //     for each post: addToFeed(userId, post.getId(), score from createdAt)
+            //   Convert to PostResponse
+            for(Post recentPost : recentPostsByUserIds){
+                feedRedisRepository.addToFeed(userId,recentPost.getId(),calculateScore(recentPost.getCreatedAt()));
+                allPosts.add(postMapper.toResponse(recentPost));
+            }
         }
+        return allPosts;
+    }
 
-        //Convert postIds to List<Long>
-        List<Long> postIds = feedPostIds.stream().map(Long::parseLong).collect(Collectors.toList());
-
-        if (hasMoreFeed) {
-            postIds.removeLast();  // only remove the extra one when there are more
+    private List<PostResponse> getCelebrityPosts(
+            List<Long> celebrityIds, LocalDateTime before, int limit){
+        List<PostResponse> allPosts = new ArrayList<>();
+        // If celebrityIds empty → return empty list
+        if(celebrityIds == null || celebrityIds.isEmpty()){
+            return List.of();
         }
+        // findRecentPostsByUserIdsAndBefore(celebrityIds, before, limit)
+        List<Post> posts = postRepository.findRecentPostsByUserIdsAndBefore(celebrityIds, before, limit);
+        // Convert each Post to PostResponse using postMapper
+        for(Post p: posts){
+            allPosts.add(postMapper.toResponse(p));
+        }
+        // Return list
+        return allPosts;
+    }
 
-        //Separate postIds into cached and uncached
-        //        → For each postId:
-        //           → Try getCachedPost(postId)
-        //           → If present → deserialize JSON → add to results
-        //           → If empty → add to missedIds list
-        getCachedPostsFromRedisCache(postIds, cacheHitPosts, cacheMissPostId);
+    private double calculateScore(LocalDateTime createdTimestamp){
+        return createdTimestamp
+                .toInstant(ZoneOffset.UTC)
+                .toEpochMilli();
+    }
 
-
-        //Batch fetch posts from PostgresSQL which are missed from redis cache
-        List<Post> postsFromDb = postRepository.findAllById(cacheMissPostId);
-
-        //cache newly fetched posts
-        cachePostsFetchedFromDb(postsFromDb, freshPosts);
-
-        //Combine cached posts + newly fetched posts
-        List<PostResponse> allPosts = new ArrayList<>(cacheHitPosts);
-        allPosts.addAll(freshPosts);
-
-
-        //Convert to PostResponse list
-        // Sort by createdAt descending
-        List<PostResponse> postFeed = allPosts.stream()
-                .sorted(Comparator.comparing(PostResponse::getCreatedAt).reversed()).collect(Collectors.toList());
-        log.info("----------PostResponse : {}", postFeed);
-
-
-        //Calculate nextCursor
-        String nextCursor = hasMoreFeed && !postFeed.isEmpty()
-                ? String.valueOf(postFeed.getLast().getCreatedAt()
-                .toInstant(ZoneOffset.UTC).toEpochMilli())
-                : null;
-
-        //build and return
-        log.info("---------------Returning PostFeed: {}, nextCursor: {}, hasMoreFeed: {}", postFeed,nextCursor,hasMoreFeed);
-        return new FeedResponse(postFeed,nextCursor,hasMoreFeed);
+    private FeedResponse emptyFeed() {
+        return FeedResponse.builder()
+                .posts(List.of())
+                .nextCursor(null)
+                .hasMore(false)
+                .build();
     }
 
     private void getCachedPostsFromRedisCache(List<Long> postIds, ArrayList<PostResponse> cacheHitPosts, ArrayList<Long> cacheMissPostId){
@@ -130,7 +223,7 @@ public class FeedServiceImpl implements FeedService {
         }
     }
 
-    private void cachePostsFetchedFromDb(List<Post> posts, List<PostResponse> freshPosts){
+    private void cachePostsFetchedFromDb(List<Post> posts, List<PostResponse> allPosts){
         for(Post post: posts){
             PostResponse postToBeCached = postMapper.toResponse(post);
             try{
@@ -141,7 +234,7 @@ public class FeedServiceImpl implements FeedService {
                 log.warn("Exception hit while serialization during cache write for post: {}", post);
                 log.warn("Error in Caching the Post");
             }
-            freshPosts.add(postToBeCached);
+            allPosts.add(postToBeCached);
         }
     }
 
