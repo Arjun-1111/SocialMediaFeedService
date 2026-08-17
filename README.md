@@ -1,5 +1,3 @@
-Social Media Feed Service — Complete Project README
-Markdown
 
 # Social Media Feed Service
 
