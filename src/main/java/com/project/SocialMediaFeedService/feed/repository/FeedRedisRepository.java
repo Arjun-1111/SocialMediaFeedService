@@ -15,8 +15,8 @@ public class FeedRedisRepository {
 
     private static final String FEED_KEY_PREFIX = "feed:user:";
     private static final String POST_CACHE_KEY_PREFIX = "post:cache:";
-    private static final long FEED_TTL_MINUTES = 5;
-    private static final long POST_CACHE_TTL_MINUTES = 5;
+    private static final long FEED_TTL_MINUTES = 2;
+    private static final long POST_CACHE_TTL_MINUTES = 2;
 
     //Add post to a user's feed
     public void addToFeed(Long userId, Long postId, double score){
@@ -72,6 +72,12 @@ public class FeedRedisRepository {
         // auto-unboxing — which throws NullPointerException if the value is null.
         //Boolean.TRUE.equals(null) returns false safely — no NPE possible.
         return Boolean.TRUE.equals(redisTemplate.hasKey(key));
+    }
+
+    //reset feed
+    public void resetFeedTtl(Long userId){
+        String key = feedKey(userId);
+        redisTemplate.expire(key, Duration.ofMinutes(FEED_TTL_MINUTES));
     }
 
     private String feedKey(Long userId) {

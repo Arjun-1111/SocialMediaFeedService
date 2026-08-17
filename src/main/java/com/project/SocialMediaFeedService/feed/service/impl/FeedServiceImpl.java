@@ -43,6 +43,7 @@ public class FeedServiceImpl implements FeedService {
     @Override
     @Transactional(readOnly = true)
     public FeedResponse getFeed(Long userId, String cursor, int limit) {
+        log.info("getFeed called for userId={} cursor={} limit={}", userId, cursor, limit);
         // Step 1: Parse cursor
         double score = parseCursorToScore(cursor);
         LocalDateTime cursorTime = parseCursorToDateTime(cursor);
@@ -57,12 +58,14 @@ public class FeedServiceImpl implements FeedService {
         Map<String, List<Long>> split = splitFollowingByType(followingIds);
         List<Long> regularIds = split.get(REGULAR);
         List<Long> celebrityIds = split.get(CELEBRITY);
+        log.info("Following count={} regular={} celebrity={}",
+                followingIds.size(), regularIds.size(), celebrityIds.size());
 
         // Step 4: Get regular posts
-        List<PostResponse> regularPosts = getRegularPosts(userId, regularIds, score, limit);
+        List<PostResponse> regularPosts = getRegularPosts(userId, regularIds, cursor, score, limit, cursorTime);
 
         // Step 5: Get celebrity posts
-        List<PostResponse> celebrityPosts = getCelebrityPosts(celebrityIds, cursorTime, limit);
+        List<PostResponse> celebrityPosts = getCelebrityPosts(celebrityIds, cursor,cursorTime, limit);
 
         // Step 6: Merge
         List<PostResponse> merged = new ArrayList<>(regularPosts);
@@ -80,6 +83,9 @@ public class FeedServiceImpl implements FeedService {
         String nextCursor = hasMore && !merged.isEmpty() ? String.valueOf(merged.getLast()
                 .getCreatedAt().toInstant(ZoneOffset.UTC).toEpochMilli())
                 : null;
+
+        log.info("Returning feed size={} hasMore={} nextCursor={}",
+                merged.size(), hasMore, nextCursor);
 
         return FeedResponse.builder()
                 .posts(merged)
@@ -120,16 +126,16 @@ public class FeedServiceImpl implements FeedService {
 
         for(User user: userIds){
             if(user.getFollowerCount() >= CELEBRITY_THRESHOLD){
-                regularAndCelebrityMap.computeIfAbsent(CELEBRITY,k -> new ArrayList<>()).add(user.getId());
+                regularAndCelebrityMap.get(CELEBRITY).add(user.getId());
             }else{
-                regularAndCelebrityMap.computeIfAbsent(REGULAR, k-> new ArrayList<>()).add(user.getId());
+                regularAndCelebrityMap.get(REGULAR).add(user.getId());
             }
         }
         return regularAndCelebrityMap;
     }
 
     private List<PostResponse> getRegularPosts(
-            Long userId, List<Long> regularIds, double score, int limit){
+            Long userId, List<Long> regularIds, String cursor, double score, int limit, LocalDateTime before){
         ArrayList<PostResponse> cacheHitPosts = new ArrayList<>();
         ArrayList<Long> cacheMissPostId = new ArrayList<>();
         List<PostResponse> allPosts = new ArrayList<>();
@@ -139,9 +145,12 @@ public class FeedServiceImpl implements FeedService {
         }
         // Check feedExists(userId)
         if(feedRedisRepository.feedExists(userId)){
+            log.info("redis feed exists for regular ids,calling for if condition for regularPost");
             // If exists:
             //   getFeedPostIds(userId, score, limit+1) → Set<String>
             Set<String> feedPostIds = feedRedisRepository.getFeedPostIds(userId, score, limit + 1);
+            // Reset TTL since user is actively reading their feed
+            feedRedisRepository.resetFeedTtl(userId);
             //   Convert to List<Long>
             List<Long> postIds = feedPostIds.stream().map(Long::parseLong).toList();
             //   Batch fetch with cache-aside (existing logic)
@@ -158,9 +167,16 @@ public class FeedServiceImpl implements FeedService {
             //Combine cached posts + newly fetched posts
             allPosts.addAll(cacheHitPosts);
         }else{
+            log.info("redis feed empty for regular ids,calling for else condition for regularPost");
             // If not exists (Redis empty):
             //   findRecentPostsByUserIds(regularIds, FEED_REBUILD_LIMIT)
-            List<Post> recentPostsByUserIds = postRepository.findRecentPostsByUserIds(regularIds, FEED_REBUILD_LIMIT);;
+            List<Post> recentPostsByUserIds;
+            if(cursor == null || cursor.isBlank()){
+                recentPostsByUserIds = postRepository.findRecentPostsByUserIds(regularIds, FEED_REBUILD_LIMIT);
+
+            }else{
+                recentPostsByUserIds = postRepository.findRecentPostsByUserIdsAndBefore(regularIds,before,FEED_REBUILD_LIMIT);
+            }
             //   Write postIds back to Redis:
             //     for each post: addToFeed(userId, post.getId(), score from createdAt)
             //   Convert to PostResponse
@@ -173,14 +189,20 @@ public class FeedServiceImpl implements FeedService {
     }
 
     private List<PostResponse> getCelebrityPosts(
-            List<Long> celebrityIds, LocalDateTime before, int limit){
+            List<Long> celebrityIds, String cursor, LocalDateTime before, int limit){
         List<PostResponse> allPosts = new ArrayList<>();
         // If celebrityIds empty → return empty list
         if(celebrityIds == null || celebrityIds.isEmpty()){
             return List.of();
         }
-        // findRecentPostsByUserIdsAndBefore(celebrityIds, before, limit)
-        List<Post> posts = postRepository.findRecentPostsByUserIdsAndBefore(celebrityIds, before, limit);
+        //if cursor is null/blank call findRecentPostsByUserIds else call findRecentPostsByUserIdsAndBefore
+        //limit+1 to check if we have more posts-we remove it later.
+        List<Post> posts;
+        if(cursor == null || cursor.isBlank()){
+            posts = postRepository.findRecentPostsByUserIds(celebrityIds,limit+1);
+        }else{
+            posts = postRepository.findRecentPostsByUserIdsAndBefore(celebrityIds, before, limit+1);
+        }
         // Convert each Post to PostResponse using postMapper
         for(Post p: posts){
             allPosts.add(postMapper.toResponse(p));
